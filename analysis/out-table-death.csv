@@ -1,0 +1,20 @@
+"","","2.5 %","97.5 %",""
+"I(cut2(DISCHARGEDELAY_HOURS, c(24)) == ""[ 24.000,129.566]"")TRUE",0.991,0.74,1.309,0.948
+"cut2(oasis, g = 3)[27,34)",2.034,1.542,2.705,0
+"cut2(oasis, g = 3)[34,64]",4.199,3.23,5.52,0
+"request_tele",0.736,0.601,0.896,0.002
+"request_vre",1.848,1.335,2.514,0
+"request_cdiff",1.531,1.101,2.091,0.009
+"cut2(elixhauser_hospital, g = 3)[  1, 7)",2.142,1.604,2.887,0
+"cut2(elixhauser_hospital, g = 3)[  7,31]",3.759,2.888,4.956,0
+"cut2(los_pre_callout_days, c(1, 3, 7, 28))[  1.000,  3.000)",0.922,0.709,1.206,0.55
+"cut2(los_pre_callout_days, c(1, 3, 7, 28))[  3.000,  7.000)",1.646,1.252,2.17,0
+"cut2(los_pre_callout_days, c(1, 3, 7, 28))[  7.000, 28.000)",2.314,1.739,3.087,0
+"cut2(los_pre_callout_days, c(1, 3, 7, 28))[ 28.000,130.762]",10.14,5.319,18.993,0
+"as.factor(callout_year)2006",0.79,0.502,1.272,0.32
+"as.factor(callout_year)2007",0.704,0.453,1.121,0.128
+"as.factor(callout_year)2008",0.547,0.349,0.877,0.01
+"as.factor(callout_year)2009",0.501,0.32,0.803,0.003
+"as.factor(callout_year)2010",0.638,0.412,1.013,0.049
+"as.factor(callout_year)2011",0.52,0.332,0.834,0.005
+"as.factor(callout_wardid == 1)TRUE",0.506,0.406,0.634,0

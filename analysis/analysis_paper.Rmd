@@ -1,0 +1,818 @@
+---
+title: "Callout Paper Output"
+author: "J.D. Raffa"
+date: "Sept 5, 2018"
+output: 
+  html_document: 
+    fig_caption: yes
+    fig_height: 8
+    fig_width: 10
+---
+
+
+Just to review:
+
+- We decided to only use MICU patients.
+- Patients had to link to Census data, which eliminated some of the older ICU stays (pre 2005, and others).
+- Excluded 2012 patients, as the quality is suspect.
+- Hour of Callout, Hour of Discharge, and Discharge Delay are all related in a somewhat complex fashion.
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,message=FALSE,warning=FALSE)
+d.nonphi <- read.csv("../callout.csv")
+nrow(d.nonphi)
+# Please note, this file is not available for extraction from the "regular"-MIMIC III, hence the "phi"
+d.phi <- read.csv("../callout-phi.csv") 
+nrow(d.phi)
+names(d.phi) <- tolower(names(d.phi))
+
+library(dplyr);library(Hmisc); library(car)
+library(ggplot2)
+```
+
+
+```{r}
+d.phi %>% full_join(d.nonphi,by="icustay_id") %>% nrow()
+d.phi %>% inner_join(d.nonphi,by="icustay_id") %>% nrow()
+d.phi %>% full_join(d.nonphi,by="icustay_id") %>% filter(micu==1 | msicu==1) %>% nrow()
+d.phi %>% inner_join(d.nonphi,by="icustay_id") %>% filter(micu==1 | msicu==1) %>% nrow()
+
+d <- d.phi %>% full_join(d.nonphi,by="icustay_id") %>% filter(micu==1 | msicu==1)
+d$HOSP_FREE_DAYS <- (28 - d$los_post_icu_days)*(d$los_post_icu_days<28)*(1-d$hospitaldeath)
+d$CALLOUT_DURING_ROUNDS <- d$hourofcallout>700 & d$hourofcallout<1200;
+d$CALLOUT_DURING_NIGHT <- d$hourofcallout>2300 | d$hourofcallout<700;
+d$DISCHARGEDELAY_HOURS <- d$dischargedelay_days*24;
+d$hourofcallout2 <- floor(d$hourofcallout/100) + ((d$hourofcallout/100) - floor(d$hourofcallout/100))*100/60
+d <- d %>% filter(callout_year<2012 & callout_year>2001)
+nrow(d)
+d$PROPFULL_BEDS <- rowSums(d[,grep("census",names(d))],na.rm=TRUE)/rowSums(d[,grep("beds",names(d))],na.rm=TRUE)
+#d <- d %>% mutate(ethnicity=stringr::str_sub(ethnicity,0,20))
+d <- d %>% mutate(ethnicity=recode_factor(ethnicity,`WHITE`="White",
+                                           `WHITE - EASTERN EUROPEAN`="White",
+                                           `WHITE - RUSSIAN` = "White",
+                                           `WHITE - BRAZILIAN` = "White",
+                                           `WHITE - OTHER EUROPEAN` = "White",
+                                           `BLACK/AFRICAN AMERICAN` = "African American/Black",
+                                           `BLACK/CAPE VERDEAN`= "African American/Black",
+                                           `BLACK/HAITIAN`= "African American/Black",
+                                           `BLACK/AFRICAN` = "African American/Black",
+                                           .default="Other"),MED_SERVICE=service=="MED")
+```
+
+
+Below are the Overall patient characteristics.
+
+```{r}
+library(MASS);library(splines);library(mgcv);library(plotly)
+d$discharge_time <- d$hourofcallout2 + d$DISCHARGEDELAY_HOURS
+d$discharge_time <- ifelse(d$discharge_time<24, d$discharge_time,d$discharge_time - floor(d$discharge_time/24)*24)
+d$daypostcall <- floor((d$hourofcallout2 + d$DISCHARGEDELAY_HOURS)/24)
+d$postcalldaycat2 <- cut2(d$daypostcall,c(1))
+
+library(tableone)
+vars1 <- c("micu","age", "callout_month","female","request_tele","request_resp","request_cdiff","request_mrsa", "request_vre","oasis","elixhauser_hospital","ethnicity","MED_SERVICE","HOSP_FREE_DAYS","callout_dayofweek","CALLOUT_DURING_NIGHT","CALLOUT_DURING_ROUNDS","DISCHARGEDELAY_HOURS","hourofcallout2","PROPFULL_BEDS","postcalldaycat2","hospitaldeath","los_preicu_days","los_post_callout_days","los_post_icu_days","los_pre_callout_days", "callout_year")
+factorVars1 = c("micu", "female","ethnicity","MED_SERVICE", "callout_month", "request_tele","request_resp","request_cdiff","request_mrsa", "request_vre","service","callout_dayofweek","CALLOUT_DURING_ROUNDS","CALLOUT_DURING_NIGHT","postcalldaycat2","hospitaldeath","callout_year")
+nonnormal.vars = c("los_preicu_days","los_post_callout_days","los_post_icu_days","los_pre_callout_days", "hourofcallout2","HOSP_FREE_DAYS")
+
+
+CreateTableOne(data=d,vars=vars1,factorVars = factorVars1) %>% print(
+  printToggle      = FALSE,
+  showAllLevels    = TRUE,
+  cramVars         = "kon",nonnormal = nonnormal.vars
+) %>%
+{data.frame(
+  variable_name             = gsub(" ", "&nbsp;", rownames(.), fixed = TRUE), ., 
+  row.names        = NULL, 
+  check.names      = FALSE, 
+  stringsAsFactors = FALSE)} %>% 
+knitr::kable(caption="Patient Characteristics Overall") 
+```
+
+
+# Question 1: Who has long discharge delays?
+
+
+```{r}
+CreateTableOne(data=d %>% mutate(DisDelay=cut2(DISCHARGEDELAY_HOURS,c(0,4,8,24))),vars=vars1,factorVars = factorVars1,strata="DisDelay",test=TRUE) %>% print(
+  printToggle      = FALSE,
+  showAllLevels    = TRUE,
+  cramVars         = "kon",nonnormal = nonnormal.vars
+) %>%
+{data.frame(
+  variable_name             = gsub(" ", "&nbsp;", rownames(.), fixed = TRUE), ., 
+  row.names        = NULL, 
+  check.names      = FALSE, 
+  stringsAsFactors = FALSE)} %>% 
+knitr::kable(caption="Patient Characteristics By Discharge Delay Categories (Hours)") 
+
+
+```
+
+Determinants of the DD are quite complex, depending on many factors.  We instead focus on breaking down DD to >=24 vs <24h
+
+
+
+```{r}
+CreateTableOne(data=d %>% mutate(DisDelay=cut2(DISCHARGEDELAY_HOURS,c(24))),vars=vars1,factorVars = factorVars1,strata="DisDelay",test=TRUE) %>% print(
+  printToggle      = FALSE,
+  showAllLevels    = TRUE,
+  cramVars         = "kon",nonnormal = nonnormal.vars
+) %>%
+{data.frame(
+  variable_name             = gsub(" ", "&nbsp;", rownames(.), fixed = TRUE), ., 
+  row.names        = NULL, 
+  check.names      = FALSE, 
+  stringsAsFactors = FALSE)} %>% 
+knitr::kable(caption="Patient Characteristics By Discharge Delay Categories (Hours)") 
+
+
+```
+
+We fit a logistic regression model for DD>24 as the "outcome" with:
+
+1. Demographics: age, sex, 
+2. Requests: tele, resp, mrsa, cdiff, vre
+3. Adjustment for severity/comoribidity/icu los: oasis, exlixhauser, los_pre_callout_days
+4. Possible structural/admin variables: DOW, month, year.
+5. Census variables: type of bed requested, proportion of hospital beds is use.
+
+as covariates.
+
+Model selection: fit full model, reduce backwards stepwise, until all variables are significant by LRT.
+
+AIC/BIC model selection was done first, but used only as a comparison to the manually worked selection (`jdr.ddelay.glm`).
+
+```{r}
+
+library(sjPlot)
+
+
+full.model.glm <- glm(cut2(DISCHARGEDELAY_HOURS,c(24))=="[ 24.000,129.566]" ~ cut2(oasis,g=3) + cut2(age,g=3) + female + request_tele + request_resp + request_mrsa + request_vre + request_cdiff + cut2(elixhauser_hospital,g=3) + cut2(los_pre_callout_days,c(1,3,7,28)) + as.factor(callout_month) + as.factor(callout_year) + as.factor(callout_dayofweek) + as.factor(callout_wardid==1)*cut2(PROPFULL_BEDS,c(0.9,1)) + MED_SERVICE + cut2(hourofcallout2,c(7,12,19)),data=d,family="binomial" )
+
+drop1(full.model.glm,test="Chisq")
+sjPlot::plot_model(full.model.glm,Title="Full Model, ddelay")
+
+library(MASS)
+final.model.glm.bic <- stepAIC(full.model.glm,k=log(nobs(full.model.glm)),trace=0)
+sjPlot::plot_model(final.model.glm.bic,Title="BIC Model, ddelay")
+drop1(final.model.glm.bic,test="Chisq")
+
+final.model.glm.aic <- stepAIC(full.model.glm,trace=0)
+sjPlot::plot_model(final.model.glm.aic,Title="AIC Model, ddelay")
+drop1(final.model.glm.aic,test="Chisq")
+
+
+
+full.model.glm <- glm(cut2(DISCHARGEDELAY_HOURS,c(24))=="[ 24.000,129.566]" ~ cut2(oasis,g=3) + cut2(age,g=3) + female + request_tele + request_resp + request_mrsa + request_vre + request_cdiff + cut2(elixhauser_hospital,g=3) + cut2(los_pre_callout_days,c(1,3,7,28)) + as.factor(callout_month) + as.factor(callout_year) + as.factor(callout_dayofweek) + as.factor(callout_wardid==1)*cut2(PROPFULL_BEDS,c(0.9,1)) + MED_SERVICE + relevel(cut2(hourofcallout2,c(7,12,19)),"[ 7.000,12.000)"),data=d,family="binomial" )
+
+#1
+
+drop.res <- drop1(full.model.glm ,test="Chisq")
+print(drop.res)
+rownames(drop.res)[which.max(drop.res$`Pr(>Chi)`)]
+drop.res$`Pr(>Chi)`[which.max(drop.res$`Pr(>Chi)`)]
+
+
+#2 
+jdr.ddelay.glm <- update( full.model.glm, .~. - cut2(age, g = 3))
+drop.res <- drop1(jdr.ddelay.glm ,test="Chisq")
+print(drop.res)
+rownames(drop.res)[which.max(drop.res$`Pr(>Chi)`)]
+drop.res$`Pr(>Chi)`[which.max(drop.res$`Pr(>Chi)`)]
+
+#3
+
+jdr.ddelay.glm <- update( jdr.ddelay.glm, .~. - cut2(elixhauser_hospital, g = 3))
+drop.res <- drop1(jdr.ddelay.glm ,test="Chisq")
+print(drop.res)
+rownames(drop.res)[which.max(drop.res$`Pr(>Chi)`)]
+drop.res$`Pr(>Chi)`[which.max(drop.res$`Pr(>Chi)`)]
+
+#4
+
+jdr.ddelay.glm <- update( jdr.ddelay.glm, .~. - MED_SERVICE)
+drop.res <- drop1(jdr.ddelay.glm ,test="Chisq")
+print(drop.res)
+rownames(drop.res)[which.max(drop.res$`Pr(>Chi)`)]
+drop.res$`Pr(>Chi)`[which.max(drop.res$`Pr(>Chi)`)]
+
+#5
+
+jdr.ddelay.glm <- update( jdr.ddelay.glm, .~. - request_resp)
+drop.res <- drop1(jdr.ddelay.glm ,test="Chisq")
+print(drop.res)
+rownames(drop.res)[which.max(drop.res$`Pr(>Chi)`)]
+drop.res$`Pr(>Chi)`[which.max(drop.res$`Pr(>Chi)`)]
+
+#6
+
+jdr.ddelay.glm <- update( jdr.ddelay.glm, .~. - request_tele)
+drop.res <- drop1(jdr.ddelay.glm ,test="Chisq")
+print(drop.res)
+rownames(drop.res)[which.max(drop.res$`Pr(>Chi)`)]
+drop.res$`Pr(>Chi)`[which.max(drop.res$`Pr(>Chi)`)]
+
+#7 
+
+jdr.ddelay.glm <- update( jdr.ddelay.glm, .~. - cut2(oasis, g = 3))
+drop.res <- drop1(jdr.ddelay.glm ,test="Chisq")
+print(drop.res)
+rownames(drop.res)[which.max(drop.res$`Pr(>Chi)`)]
+drop.res$`Pr(>Chi)`[which.max(drop.res$`Pr(>Chi)`)]
+
+#8
+
+jdr.ddelay.glm <- update( jdr.ddelay.glm, .~. - cut2(los_pre_callout_days, c(1, 3, 7, 28)))
+drop.res <- drop1(jdr.ddelay.glm ,test="Chisq")
+print(drop.res)
+rownames(drop.res)[which.max(drop.res$`Pr(>Chi)`)]
+drop.res$`Pr(>Chi)`[which.max(drop.res$`Pr(>Chi)`)]
+
+#stop
+
+summary(jdr.ddelay.glm)
+sjt.glm(jdr.ddelay.glm)
+plot_model(jdr.ddelay.glm)
+
+# leave outs:
+leave.out <- c(1,35,36)
+out <- round(cbind(exp(jdr.ddelay.glm$coef)[-leave.out],exp(confint(jdr.ddelay.glm)[-leave.out,]),summary(jdr.ddelay.glm)$coef[-leave.out,4]),3)
+
+#interactions: using Wald intervals/tests
+covM <- summary(jdr.ddelay.glm)$cov.unscale[c(30:31,35:36),c(30:31,35:36)]
+Z <- matrix(c(1,0,0,1,1,0,0,1),nr=2);
+se <- sqrt(diag(Z%*%covM%*%t(Z)))
+out <- rbind(out,round(cbind(exp(jdr.ddelay.glm$coef[30:31] +jdr.ddelay.glm$coef[35:36]),exp(jdr.ddelay.glm$coef[30:31] +jdr.ddelay.glm$coef[35:36] - qnorm(0.975)*se), exp(jdr.ddelay.glm$coef[30:31] +jdr.ddelay.glm$coef[35:36] + qnorm(0.975*se)),pnorm(-(jdr.ddelay.glm$coef[30:31] +jdr.ddelay.glm$coef[35:36])/se)*2),3))
+write.csv(file="out-table-ddelay.csv",out)  # CSV was used in the paper, after formatting, rounding, etc.
+
+```
+
+## Answer 1: 
+
+**Solid evidence**: When Hospital is near or over capacity, when mrsa/cdiff have to be taken into account (more likely); When the callout is made during rounds or in more recent calendar year (less likely).
+
+**Less Solid Evidence**: All of the above **PLUS**: On certain days of the week, sicker patients (OASIS), certain months, vre (more likely); Female (less likely).  Effect modified of "first available bed" and propfull beds. E.g., when hospital is <90% used: "first available bed" => less likely to have a long delay, but effect is negated or reversed when hospitals are full.
+
+
+# Question 2: Do people who have long discharge delays (>24 hours) die more often?
+
+
+- Marginal evidence in above table: 5.4% vs 6.8% (p=0.06), but we know these patients are generally sicker, more likely to have concerns about cdiff, vre, mrsa, etc.
+
+
+We will build a model in a similar way as before, but add the long discharge delay (>24hrs) into a model for hospital mortality, retaining our exposure of interested (DD) throughout.
+```{r}
+vars1 <- c("micu","age", "callout_month","female","request_tele","request_resp","request_cdiff","request_mrsa", "request_vre","oasis","elixhauser_hospital","ethnicity","MED_SERVICE","HOSP_FREE_DAYS","callout_dayofweek","CALLOUT_DURING_NIGHT","CALLOUT_DURING_ROUNDS","DISCHARGEDELAY_HOURS","hourofcallout2","PROPFULL_BEDS","postcalldaycat2","los_preicu_days","los_post_callout_days","los_post_icu_days","los_pre_callout_days", "callout_year")
+factorVars1 = c("micu", "female","ethnicity","MED_SERVICE", "callout_month", "request_tele","request_resp","request_cdiff","request_mrsa", "request_vre","service","callout_dayofweek","CALLOUT_DURING_ROUNDS","CALLOUT_DURING_NIGHT","postcalldaycat2","callout_year")
+nonnormal.vars = c("los_preicu_days","los_post_callout_days","los_post_icu_days","los_pre_callout_days", "hourofcallout2","HOSP_FREE_DAYS")
+
+
+CreateTableOne(data=d,vars=vars1,factorVars = factorVars1,strata="hospitaldeath") %>% print(
+  printToggle      = FALSE,
+  showAllLevels    = TRUE,
+  cramVars         = "kon",nonnormal = nonnormal.vars
+) %>%
+{data.frame(
+  variable_name             = gsub(" ", "&nbsp;", rownames(.), fixed = TRUE), ., 
+  row.names        = NULL, 
+  check.names      = FALSE, 
+  stringsAsFactors = FALSE)} %>% 
+knitr::kable(caption="Patient Characteristics Overall") 
+
+```
+
+```{r}
+full.model.glm <- glm(hospitaldeath ~ I(cut2(DISCHARGEDELAY_HOURS,c(24))=="[ 24.000,129.566]") +cut2(oasis,g=3) + cut2(age,g=3) + female + request_tele + request_resp + request_mrsa + request_vre + request_cdiff + cut2(elixhauser_hospital,g=3) + cut2(los_pre_callout_days,c(1,3,7,28)) + as.factor(callout_month) + as.factor(callout_year) + as.factor(callout_dayofweek) + as.factor(callout_wardid==1)*cut2(PROPFULL_BEDS,c(0.9,1)) + MED_SERVICE + relevel(cut2(hourofcallout2,c(7,12,19)),"[ 7.000,12.000)"),data=d,family="binomial" )
+
+drop1(full.model.glm,test="Chisq")
+sjPlot::plot_model(full.model.glm,Title="Full Model, mortality")
+
+library(MASS)
+final.model.glm.bic <- stepAIC(full.model.glm,k=log(nobs(full.model.glm)),trace=0,scope=list(lower=~I(cut2(DISCHARGEDELAY_HOURS,c(24))=="[ 24.000,129.566]")))
+sjPlot::plot_model(final.model.glm.bic,Title="BIC Model, mortality")
+drop1(final.model.glm.bic,test="Chisq")
+
+final.model.glm.aic <- stepAIC(full.model.glm,trace=0,scope=list(lower=~I(cut2(DISCHARGEDELAY_HOURS,c(24))=="[ 24.000,129.566]")))
+sjPlot::plot_model(final.model.glm.aic,Title="AIC Model, mortality")
+drop1(final.model.glm.aic,test="Chisq")
+
+
+#jdr
+full.model.glm <- glm(hospitaldeath ~ I(cut2(DISCHARGEDELAY_HOURS,c(24))=="[ 24.000,129.566]") +cut2(oasis,g=3) + cut2(age,g=3) + female + request_tele + request_resp + request_mrsa + request_vre + request_cdiff + cut2(elixhauser_hospital,g=3) + cut2(los_pre_callout_days,c(1,3,7,28)) + as.factor(callout_month) + as.factor(callout_year) + as.factor(callout_dayofweek) + as.factor(callout_wardid==1)*cut2(PROPFULL_BEDS,c(0.9,1)) + MED_SERVICE + relevel(cut2(hourofcallout2,c(7,12,19)),"[ 7.000,12.000)"),data=d,family="binomial" )
+summary(full.model.glm)
+drop1(full.model.glm)
+
+#1
+
+
+
+drop.res <- drop1(full.model.glm ,test="Chisq")
+print(drop.res)
+rownames(drop.res)[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+drop.res$`Pr(>Chi)`[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+
+
+#2 
+jdr.death.glm <- update( full.model.glm, .~. - request_resp)
+drop.res <- drop1(jdr.death.glm,test="Chisq")
+print(drop.res)
+rownames(drop.res)[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+drop.res$`Pr(>Chi)`[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+
+#3 
+jdr.death.glm <- update( jdr.death.glm, .~. - request_mrsa)
+drop.res <- drop1(jdr.death.glm,test="Chisq")
+print(drop.res)
+rownames(drop.res)[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+drop.res$`Pr(>Chi)`[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+
+#interaction almost same as age!
+#4
+jdr.death.glm <- update( jdr.death.glm, .~. - as.factor(callout_wardid == 1):cut2(PROPFULL_BEDS, c(0.9, 1)))
+drop.res <- drop1(jdr.death.glm,test="Chisq")
+print(drop.res)
+rownames(drop.res)[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+drop.res$`Pr(>Chi)`[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+
+#5 
+
+jdr.death.glm <- update( jdr.death.glm, .~. - cut2(PROPFULL_BEDS, c(0.9, 1)))
+drop.res <- drop1(jdr.death.glm,test="Chisq")
+print(drop.res)
+rownames(drop.res)[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+drop.res$`Pr(>Chi)`[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+
+#6
+
+jdr.death.glm <- update( jdr.death.glm, .~. - cut2(age, g = 3))
+drop.res <- drop1(jdr.death.glm,test="Chisq")
+print(drop.res)
+rownames(drop.res)[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+drop.res$`Pr(>Chi)`[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+
+#7 
+
+jdr.death.glm <- update( jdr.death.glm, .~. - as.factor(callout_dayofweek))
+drop.res <- drop1(jdr.death.glm,test="Chisq")
+print(drop.res)
+rownames(drop.res)[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+drop.res$`Pr(>Chi)`[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+
+#8 
+
+jdr.death.glm <- update( jdr.death.glm, .~. - as.factor(callout_month))
+drop.res <- drop1(jdr.death.glm,test="Chisq")
+print(drop.res)
+rownames(drop.res)[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+drop.res$`Pr(>Chi)`[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+
+#9 
+
+jdr.death.glm <- update( jdr.death.glm, .~. - MED_SERVICE)
+drop.res <- drop1(jdr.death.glm,test="Chisq")
+print(drop.res)
+rownames(drop.res)[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+drop.res$`Pr(>Chi)`[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+
+
+#10 
+
+jdr.death.glm <- update( jdr.death.glm, .~. - relevel(cut2(hourofcallout2, c(7, 12, 19)), "[ 7.000,12.000)"))
+drop.res <- drop1(jdr.death.glm,test="Chisq")
+print(drop.res)
+rownames(drop.res)[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+drop.res$`Pr(>Chi)`[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+
+#11 
+
+jdr.death.glm <- update( jdr.death.glm, .~. - female)
+drop.res <- drop1(jdr.death.glm,test="Chisq")
+print(drop.res)
+rownames(drop.res)[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+drop.res$`Pr(>Chi)`[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+
+
+plot_model(jdr.death.glm)
+sjt.glm(jdr.death.glm)
+
+leave.out <- 1
+out2 <- round(cbind(exp(jdr.death.glm$coef)[-leave.out],exp(confint(jdr.death.glm)[-leave.out,]),summary(jdr.death.glm)$coef[-leave.out,4]),3)
+print(out2)
+write.csv(file="out-table-death.csv",out2)
+
+
+```
+
+## Answer 2: After adjusting for potential confounders, there is no statistically significant evidence that a long delay produces a better hospital mortality outcome.
+
+
+# Question 3:  Do individuals with a long discharge delay have smaller numbers of hospital free days?
+
+HFDs are technically ordinal, so we tried Proportional Odds Logistic Regression.  This didn't make it into the paper.
+
+There is not very much evidence in the above table that hospital free days is impacted by long discharge delays (21.36 vs 21.09, p=0.265)
+
+We can look at it using an empirical cumulative distribution function:
+```{r}
+
+spl <- split(d,cut2(d$DISCHARGEDELAY_HOURS,c(24))=="[ 24.000,129.566]")
+plot(ecdf(floor(spl[[1]]$HOSP_FREE_DAYS)),main="ecdf red=short delay",lwd=2)
+lines(ecdf(floor(spl[[2]]$HOSP_FREE_DAYS)),col="red")
+
+```
+
+
+
+# Question 4: Do people who have long discharge delays (>24 hours) have a "good outcome" defined as a short post discharge LOS (<1 week) and survive?
+
+```{r}
+with(d,table(HOSP_FREE_DAYS>21))
+with(d,table(cut2(DISCHARGEDELAY_HOURS,c(24))=="[ 24.000,129.566]"))
+with(d,table(HOSP_FREE_DAYS>21,cut2(DISCHARGEDELAY_HOURS,c(24))=="[ 24.000,129.566]"))
+
+prop.table(with(d,table(HOSP_FREE_DAYS>21,cut2(DISCHARGEDELAY_HOURS,c(24))=="[ 24.000,129.566]")),2)
+chisq.test(with(d,table(HOSP_FREE_DAYS>21,cut2(DISCHARGEDELAY_HOURS,c(24))=="[ 24.000,129.566]")))
+
+vars1 <- c("micu","age", "callout_month","female","request_tele","request_resp","request_cdiff","request_mrsa", "request_vre","oasis","elixhauser_hospital","ethnicity","MED_SERVICE","HOSP_FREE_DAYS","callout_dayofweek","CALLOUT_DURING_NIGHT","CALLOUT_DURING_ROUNDS","DISCHARGEDELAY_HOURS","hourofcallout2","PROPFULL_BEDS","postcalldaycat2","los_preicu_days","los_post_callout_days","los_post_icu_days","los_pre_callout_days", "callout_year","hospitaldeath")
+factorVars1 = c("micu", "female","ethnicity","MED_SERVICE", "callout_month", "request_tele","request_resp","request_cdiff","request_mrsa", "request_vre","service","callout_dayofweek","CALLOUT_DURING_ROUNDS","CALLOUT_DURING_NIGHT","postcalldaycat2","callout_year")
+nonnormal.vars = c("los_preicu_days","los_post_callout_days","los_post_icu_days","los_pre_callout_days", "hourofcallout2")
+
+d$GOOD_HFDs <- d$HOSP_FREE_DAYS>21;
+CreateTableOne(data=d,vars=vars1,factorVars = factorVars1,strata="GOOD_HFDs") %>% print(
+  printToggle      = FALSE,
+  showAllLevels    = TRUE,
+  cramVars         = "kon",nonnormal = nonnormal.vars
+) %>%
+{data.frame(
+  variable_name             = gsub(" ", "&nbsp;", rownames(.), fixed = TRUE), ., 
+  row.names        = NULL, 
+  check.names      = FALSE, 
+  stringsAsFactors = FALSE)} %>% 
+knitr::kable(caption="Patient Characteristics Overall") 
+
+```
+
+
+
+```{r}
+full.model.glm <- glm(I(HOSP_FREE_DAYS>21) ~ I(cut2(DISCHARGEDELAY_HOURS,c(24))=="[ 24.000,129.566]") +cut2(oasis,g=3) + cut2(age,g=3) + female + request_tele + request_resp + request_mrsa + request_vre + request_cdiff + cut2(elixhauser_hospital,g=3) + cut2(los_pre_callout_days,c(1,3,7,28)) + as.factor(callout_month) + as.factor(callout_year) + as.factor(callout_dayofweek) + as.factor(callout_wardid==1)*cut2(PROPFULL_BEDS,c(0.9,1)) + MED_SERVICE + relevel(cut2(hourofcallout2,c(7,12,19)),"[ 7.000,12.000)"),data=d,family="binomial" )
+
+drop1(full.model.glm,test="Chisq")
+sjPlot::plot_model(full.model.glm,Title="Full Model, mortality")
+
+library(MASS)
+final.model.glm.bic <- stepAIC(full.model.glm,k=log(nobs(full.model.glm)),trace=0,scope=list(lower=~I(cut2(DISCHARGEDELAY_HOURS,c(24))=="[ 24.000,129.566]")))
+sjPlot::plot_model(final.model.glm.bic,Title="BIC Model, mortality")
+drop1(final.model.glm.bic,test="Chisq")
+
+final.model.glm.aic <- stepAIC(full.model.glm,trace=0,scope=list(lower=~I(cut2(DISCHARGEDELAY_HOURS,c(24))=="[ 24.000,129.566]")))
+sjPlot::plot_model(final.model.glm.aic,Title="AIC Model, mortality")
+drop1(final.model.glm.aic,test="Chisq")
+
+#jdr
+full.model.glm <- glm(I(HOSP_FREE_DAYS>21) ~ I(cut2(DISCHARGEDELAY_HOURS,c(24))=="[ 24.000,129.566]") +cut2(oasis,g=3) + cut2(age,g=3) + female + request_tele + request_resp + request_mrsa + request_vre + request_cdiff + cut2(elixhauser_hospital,g=3) + cut2(los_pre_callout_days,c(1,3,7,28)) + as.factor(callout_month) + as.factor(callout_year) + as.factor(callout_dayofweek) + as.factor(callout_wardid==1)*cut2(PROPFULL_BEDS,c(0.9,1)) + MED_SERVICE + relevel(cut2(hourofcallout2,c(7,12,19)),"[ 7.000,12.000)"),data=d,family="binomial" )
+summary(full.model.glm)
+drop1(full.model.glm)
+
+#1
+
+
+
+drop.res <- drop1(full.model.glm ,test="Chisq")
+print(drop.res)
+rownames(drop.res)[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+drop.res$`Pr(>Chi)`[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+
+#2 
+jdr.goodhfd.glm <- update( full.model.glm, .~. - as.factor(callout_wardid == 1):cut2(PROPFULL_BEDS, c(0.9, 1)))
+drop.res <- drop1(jdr.goodhfd.glm,test="Chisq")
+print(drop.res)
+rownames(drop.res)[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+drop.res$`Pr(>Chi)`[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+
+
+#3
+jdr.goodhfd.glm <- update( jdr.goodhfd.glm, .~. - MED_SERVICE)
+drop.res <- drop1(jdr.goodhfd.glm,test="Chisq")
+print(drop.res)
+rownames(drop.res)[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+drop.res$`Pr(>Chi)`[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+
+#4
+jdr.goodhfd.glm <- update( jdr.goodhfd.glm, .~. - request_tele)
+drop.res <- drop1(jdr.goodhfd.glm,test="Chisq")
+print(drop.res)
+rownames(drop.res)[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+drop.res$`Pr(>Chi)`[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+
+#5
+jdr.goodhfd.glm <- update( jdr.goodhfd.glm, .~. - as.factor(callout_dayofweek))
+drop.res <- drop1(jdr.goodhfd.glm,test="Chisq")
+print(drop.res)
+rownames(drop.res)[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+drop.res$`Pr(>Chi)`[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+
+#6
+jdr.goodhfd.glm <- update( jdr.goodhfd.glm, .~. -cut2(PROPFULL_BEDS, c(0.9, 1)))
+drop.res <- drop1(jdr.goodhfd.glm,test="Chisq")
+print(drop.res)
+rownames(drop.res)[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+drop.res$`Pr(>Chi)`[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+
+
+#7
+jdr.goodhfd.glm <- update( jdr.goodhfd.glm, .~. -female)
+drop.res <- drop1(jdr.goodhfd.glm,test="Chisq")
+print(drop.res)
+rownames(drop.res)[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+drop.res$`Pr(>Chi)`[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+
+
+#8
+jdr.goodhfd.glm <- update( jdr.goodhfd.glm, .~. -as.factor(callout_month))
+drop.res <- drop1(jdr.goodhfd.glm,test="Chisq")
+print(drop.res)
+rownames(drop.res)[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+drop.res$`Pr(>Chi)`[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+
+#9
+jdr.goodhfd.glm <- update( jdr.goodhfd.glm, .~. -relevel(cut2(hourofcallout2, c(7, 12, 19)), "[ 7.000,12.000)"))
+drop.res <- drop1(jdr.goodhfd.glm,test="Chisq")
+print(drop.res)
+rownames(drop.res)[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+drop.res$`Pr(>Chi)`[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+
+
+#10
+jdr.goodhfd.glm <- update( jdr.goodhfd.glm, .~. -request_mrsa)
+drop.res <- drop1(jdr.goodhfd.glm,test="Chisq")
+print(drop.res)
+rownames(drop.res)[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+drop.res$`Pr(>Chi)`[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+
+
+#11
+jdr.goodhfd.glm <- update( jdr.goodhfd.glm, .~. -request_resp)
+drop.res <- drop1(jdr.goodhfd.glm,test="Chisq")
+print(drop.res)
+rownames(drop.res)[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+drop.res$`Pr(>Chi)`[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+
+plot_model(jdr.goodhfd.glm)
+sjt.glm(jdr.goodhfd.glm)
+
+leave.out <- 1
+out3 <- round(cbind(exp(jdr.goodhfd.glm$coef)[-leave.out],exp(confint(jdr.goodhfd.glm)[-leave.out,]),summary(jdr.goodhfd.glm)$coef[-leave.out,4]),3)
+print(out3)
+write.csv(file="out-table-good_hfd.csv",out3)
+
+
+```
+
+## Answer 4: After adjusting for potential confounders, there is no statistically significant evidence that a long delay produces a better HFD outcome (>21 days).
+
+
+# Question 5: Do people who have long discharge delays (>24 hours) have a "bad outcome" defined as a long post discharge LOS (>3 week) or death?
+
+```{r}
+with(d,table(HOSP_FREE_DAYS<=7))
+with(d,table(cut2(DISCHARGEDELAY_HOURS,c(24))=="[ 24.000,129.566]"))
+with(d,table(HOSP_FREE_DAYS<=7,cut2(DISCHARGEDELAY_HOURS,c(24))=="[ 24.000,129.566]"))
+
+prop.table(with(d,table(HOSP_FREE_DAYS<=7,cut2(DISCHARGEDELAY_HOURS,c(24))=="[ 24.000,129.566]")),2)
+chisq.test(with(d,table(HOSP_FREE_DAYS<=7,cut2(DISCHARGEDELAY_HOURS,c(24))=="[ 24.000,129.566]")))
+```
+
+
+```{r}
+vars1 <- c("micu","age", "callout_month","female","request_tele","request_resp","request_cdiff","request_mrsa", "request_vre","oasis","elixhauser_hospital","ethnicity","MED_SERVICE","HOSP_FREE_DAYS","callout_dayofweek","CALLOUT_DURING_NIGHT","CALLOUT_DURING_ROUNDS","DISCHARGEDELAY_HOURS","hourofcallout2","PROPFULL_BEDS","postcalldaycat2","los_preicu_days","los_post_callout_days","los_post_icu_days","los_pre_callout_days", "callout_year","hospitaldeath")
+factorVars1 = c("micu", "female","ethnicity","MED_SERVICE", "callout_month", "request_tele","request_resp","request_cdiff","request_mrsa", "request_vre","service","callout_dayofweek","CALLOUT_DURING_ROUNDS","CALLOUT_DURING_NIGHT","postcalldaycat2","callout_year")
+nonnormal.vars = c("los_preicu_days","los_post_callout_days","los_post_icu_days","los_pre_callout_days", "hourofcallout2")
+
+d$BAD_HFDs <- d$HOSP_FREE_DAYS<=7;
+CreateTableOne(data=d,vars=vars1,factorVars = factorVars1,strata="BAD_HFDs") %>% print(
+  printToggle      = FALSE,
+  showAllLevels    = TRUE,
+  cramVars         = "kon",nonnormal = nonnormal.vars
+) %>%
+{data.frame(
+  variable_name             = gsub(" ", "&nbsp;", rownames(.), fixed = TRUE), ., 
+  row.names        = NULL, 
+  check.names      = FALSE, 
+  stringsAsFactors = FALSE)} %>% 
+knitr::kable(caption="Patient Characteristics Overall") 
+
+```
+
+
+```{r}
+full.model.glm <- glm(I(HOSP_FREE_DAYS<=7) ~ I(cut2(DISCHARGEDELAY_HOURS,c(24))=="[ 24.000,129.566]") +cut2(oasis,g=3) + cut2(age,g=3) + female + request_tele + request_resp + request_mrsa + request_vre + request_cdiff + cut2(elixhauser_hospital,g=3) + cut2(los_pre_callout_days,c(1,3,7,28)) + as.factor(callout_month) + as.factor(callout_year) + as.factor(callout_dayofweek) + as.factor(callout_wardid==1)*cut2(PROPFULL_BEDS,c(0.9,1)) + MED_SERVICE + relevel(cut2(hourofcallout2,c(7,12,19)),"[ 7.000,12.000)"),data=d,family="binomial" )
+
+drop1(full.model.glm,test="Chisq")
+sjPlot::plot_model(full.model.glm,Title="Full Model, mortality")
+
+ library(MASS)
+final.model.glm.bic <- stepAIC(full.model.glm,k=log(nobs(full.model.glm)),trace=0,scope=list(lower=~I(cut2(DISCHARGEDELAY_HOURS,c(24))=="[ 24.000,129.566]")))
+sjPlot::plot_model(final.model.glm.bic,Title="BIC Model, mortality")
+drop1(final.model.glm.bic,test="Chisq")
+
+final.model.glm.aic <- stepAIC(full.model.glm,trace=0,scope=list(lower=~I(cut2(DISCHARGEDELAY_HOURS,c(24))=="[ 24.000,129.566]")))
+sjPlot::plot_model(final.model.glm.aic,Title="AIC Model, mortality")
+drop1(final.model.glm.aic,test="Chisq")
+
+
+#jdr
+full.model.glm <- glm(I(HOSP_FREE_DAYS<=7) ~ I(cut2(DISCHARGEDELAY_HOURS,c(24))=="[ 24.000,129.566]") +cut2(oasis,g=3) + cut2(age,g=3) + female + request_tele + request_resp + request_mrsa + request_vre + request_cdiff + cut2(elixhauser_hospital,g=3) + cut2(los_pre_callout_days,c(1,3,7,28)) + as.factor(callout_month) + as.factor(callout_year) + as.factor(callout_dayofweek) + as.factor(callout_wardid==1)*cut2(PROPFULL_BEDS,c(0.9,1)) + MED_SERVICE + relevel(cut2(hourofcallout2,c(7,12,19)),"[ 7.000,12.000)"),data=d,family="binomial" )
+summary(full.model.glm)
+drop1(full.model.glm)
+
+#1
+
+
+
+drop.res <- drop1(full.model.glm ,test="Chisq")
+print(drop.res)
+rownames(drop.res)[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+drop.res$`Pr(>Chi)`[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+
+#2 
+jdr.badhfd.glm <- update( full.model.glm, .~. - request_mrsa)
+drop.res <- drop1(jdr.badhfd.glm,test="Chisq")
+print(drop.res)
+rownames(drop.res)[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+drop.res$`Pr(>Chi)`[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+
+
+#3
+jdr.badhfd.glm <- update( jdr.badhfd.glm, .~. - as.factor(callout_dayofweek))
+drop.res <- drop1(jdr.badhfd.glm,test="Chisq")
+print(drop.res)
+rownames(drop.res)[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+drop.res$`Pr(>Chi)`[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+
+
+#4
+jdr.badhfd.glm <- update( jdr.badhfd.glm, .~. - as.factor(callout_wardid == 1):cut2(PROPFULL_BEDS, c(0.9, 1)))
+drop.res <- drop1(jdr.badhfd.glm,test="Chisq")
+print(drop.res)
+rownames(drop.res)[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+drop.res$`Pr(>Chi)`[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+
+
+#5
+jdr.badhfd.glm <- update( jdr.badhfd.glm, .~. - cut2(PROPFULL_BEDS, c(0.9, 1)))
+drop.res <- drop1(jdr.badhfd.glm,test="Chisq")
+print(drop.res)
+rownames(drop.res)[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+drop.res$`Pr(>Chi)`[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+
+
+#6
+jdr.badhfd.glm <- update( jdr.badhfd.glm, .~. - as.factor(callout_month))
+drop.res <- drop1(jdr.badhfd.glm,test="Chisq")
+print(drop.res)
+rownames(drop.res)[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+drop.res$`Pr(>Chi)`[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+
+#7
+jdr.badhfd.glm <- update( jdr.badhfd.glm, .~. - request_resp)
+drop.res <- drop1(jdr.badhfd.glm,test="Chisq")
+print(drop.res)
+rownames(drop.res)[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+drop.res$`Pr(>Chi)`[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+
+#8
+jdr.badhfd.glm <- update( jdr.badhfd.glm, .~. - MED_SERVICE)
+drop.res <- drop1(jdr.badhfd.glm,test="Chisq")
+print(drop.res)
+rownames(drop.res)[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+drop.res$`Pr(>Chi)`[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+
+
+#9
+jdr.badhfd.glm <- update( jdr.badhfd.glm, .~. - female)
+drop.res <- drop1(jdr.badhfd.glm,test="Chisq")
+print(drop.res)
+rownames(drop.res)[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+drop.res$`Pr(>Chi)`[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+
+
+
+#10
+jdr.badhfd.glm <- update( jdr.badhfd.glm, .~. - relevel(cut2(hourofcallout2, c(7, 12, 19)), "[ 7.000,12.000)"))
+drop.res <- drop1(jdr.badhfd.glm,test="Chisq")
+print(drop.res)
+rownames(drop.res)[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+drop.res$`Pr(>Chi)`[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+
+#11
+jdr.badhfd.glm <- update( jdr.badhfd.glm, .~. - cut2(age, g = 3))
+drop.res <- drop1(jdr.badhfd.glm,test="Chisq")
+print(drop.res)
+rownames(drop.res)[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+drop.res$`Pr(>Chi)`[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+
+
+plot_model(jdr.badhfd.glm)
+sjt.glm(jdr.badhfd.glm)
+
+leave.out <- 1
+out4 <- round(cbind(exp(jdr.badhfd.glm$coef)[-leave.out],exp(confint(jdr.badhfd.glm)[-leave.out,]),summary(jdr.badhfd.glm)$coef[-leave.out,4]),3)
+print(out4)
+write.csv(file="out-table-bad_hfd.csv",out4)
+
+```
+
+## Answer 5: After adjusting for potential confounders, there is no statistically significant evidence that a long delay yield lower rates of poor HFD outcome (<7 days).
+
+
+# Question 6: Do survivors of the hospital stay who have long discharge delays have longer log(LOS_post_icu)?
+
+Post ICU days were similar in the above table 5.95 vs 6.19 (p=0.35)
+
+
+
+
+
+```{r}
+full.model.glm <- lm(log(los_post_icu_days + 1) ~  I(cut2(DISCHARGEDELAY_HOURS,c(24))=="[ 24.000,129.566]") +cut2(oasis,g=3) + cut2(age,g=3) + female + request_tele + request_resp + request_mrsa + request_vre + request_cdiff + cut2(elixhauser_hospital,g=3) + cut2(los_pre_callout_days,c(1,3,7,28)) + as.factor(callout_month) + as.factor(callout_year) + as.factor(callout_dayofweek) + as.factor(callout_wardid==1)*cut2(PROPFULL_BEDS,c(0.9,1)) + MED_SERVICE + relevel(cut2(hourofcallout2,c(7,12,19)),"[ 7.00,12.00)"),data=(d %>% filter(hospitaldeath==0)) )
+
+drop1(full.model.glm,test="F")
+sjPlot::plot_model(full.model.glm,Title="Full Model, LOS")
+
+library(MASS)
+final.model.glm.bic <- stepAIC(full.model.glm,k=log(nobs(full.model.glm)),trace=0,scope=list(lower=~I(cut2(DISCHARGEDELAY_HOURS,c(24))=="[ 24.000,129.566]")))
+sjPlot::plot_model(final.model.glm.bic,Title="BIC Model, LOS")
+drop1(final.model.glm.bic,test="F")
+
+final.model.glm.aic <- stepAIC(full.model.glm,trace=0,scope=list(lower=~I(cut2(DISCHARGEDELAY_HOURS,c(24))=="[ 24.000,129.566]")))
+sjPlot::plot_model(final.model.glm.aic,Title="AIC Model, LOS")
+drop1(final.model.glm.aic,test="F")
+
+
+#jdr
+full.model.glm <- lm(log(los_post_icu_days + 1) ~  I(cut2(DISCHARGEDELAY_HOURS,c(24))=="[ 24.000,129.566]") +cut2(oasis,g=3) + cut2(age,g=3) + female + request_tele + request_resp + request_mrsa + request_vre + request_cdiff + cut2(elixhauser_hospital,g=3) + cut2(los_pre_callout_days,c(1,3,7,28)) + as.factor(callout_month) + as.factor(callout_year) + as.factor(callout_dayofweek) + as.factor(callout_wardid==1)*cut2(PROPFULL_BEDS,c(0.9,1)) + MED_SERVICE + relevel(cut2(hourofcallout2,c(7,12,19)),"[ 7.00,12.00)"),data=(d %>% filter(hospitaldeath==0)) )
+summary(full.model.glm)
+drop1(full.model.glm)
+
+#1
+
+
+
+drop.res <- drop1(full.model.glm ,test="Chisq")
+print(drop.res)
+rownames(drop.res)[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+drop.res$`Pr(>Chi)`[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+
+#2 
+jdr.los.glm <- update( full.model.glm, .~. - as.factor(callout_wardid == 1):cut2(PROPFULL_BEDS, c(0.9, 1)))
+drop.res <- drop1(jdr.los.glm,test="Chisq")
+print(drop.res)
+rownames(drop.res)[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+drop.res$`Pr(>Chi)`[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+
+
+#3
+jdr.los.glm <- update( jdr.los.glm, .~. -as.factor(callout_month))
+drop.res <- drop1(jdr.los.glm,test="Chisq")
+print(drop.res)
+rownames(drop.res)[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+drop.res$`Pr(>Chi)`[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+
+
+#4 
+
+
+jdr.los.glm <- update( jdr.los.glm, .~. -as.factor(callout_year))
+drop.res <- drop1(jdr.los.glm,test="Chisq")
+print(drop.res)
+rownames(drop.res)[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+drop.res$`Pr(>Chi)`[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+
+#5
+
+jdr.los.glm <- update( jdr.los.glm, .~. -relevel(cut2(hourofcallout2, c(7, 12, 19)), "[ 7.00,12.00)"))
+drop.res <- drop1(jdr.los.glm,test="Chisq")
+print(drop.res)
+rownames(drop.res)[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+drop.res$`Pr(>Chi)`[-2][which.max(drop.res$`Pr(>Chi)`[-2])]
+
+
+plot_model(jdr.los.glm)
+sjt.glm(jdr.los.glm)
+
+leave.out <- 1
+out5 <- round(cbind((jdr.los.glm$coef)[-leave.out],(confint(jdr.los.glm)[-leave.out,]),summary(jdr.los.glm)$coef[-leave.out,4]),3)
+print(out5)
+write.csv(file="out-table-los.csv",out5)
+
+
+#plot(jdr.los.glm)
+
+
+```
+
+## Answer 6: After adjusting for potential confounders, There appears to be some evidence that those with long delays have about 12\% shorter post ICU LOS.
+
+

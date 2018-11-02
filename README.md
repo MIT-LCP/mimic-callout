@@ -1,6 +1,23 @@
-# callout
+# callout [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.1410655.svg)](https://doi.org/10.5281/zenodo.1410655)
 
 The research question of this study is: Do discharge delays from the ICU adversely affect patient outcomes?
+
+This research was published in the Journal of Intensive Care Medicine as: [Impact of Intensive Care Unit Discharge Delays on Patient Outcomes: A Retrospective Cohort Study](https://doi.org/10.1177/0885066618800276)
+
+```
+@article{bose2018impact,
+  title={Impact of Intensive Care Unit Discharge Delays on Patient Outcomes: A Retrospective Cohort Study},
+  author={Bose, Somnath and Johnson, Alistair EW and Moskowitz, Ari and Celi, Leo Anthony and Raffa, Jesse D},
+  journal={Journal of intensive care medicine},
+  pages={0885066618800276},
+  year={2018},
+  publisher={SAGE Publications Sage CA: Los Angeles, CA},
+  doi={10.1177/0885066618800276}
+}
+```
+
+This research was generously supported by grants 1U01HL123022-01 (NIH/NHLBI), R01-
+EB017205 (NIH/NIBIB), R01-GM104987 (NIH/NIBIB), and 2T32HL007374-37 (NIH).
 
 # Data extraction
 

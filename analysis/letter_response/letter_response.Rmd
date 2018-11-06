@@ -1,0 +1,395 @@
+---
+title: "Callout: Response"
+author: "J.D. Raffa"
+date: "Nov. 1, 2018"
+output: 
+  html_document: 
+    fig_caption: yes
+    fig_height: 8
+    fig_width: 8
+---
+
+This analysis was done in response to a letter submitted by Drs. Ofoma and Keithireddy about our paper.
+
+The main concern was related to the use of the discharge delay > 24 h exposure.  This work explores the sensitivity of the conclusions to this parametrization fitting natural cubic splines and a more granular binned approach.
+
+They had also request more information about the different groups with longer/shorter discharge delays, and this was actually looked at in our previous output document (analysis_paper.html), but is repeated here for completeness.
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,message=FALSE,warning  =FALSE,fig.keep=TRUE,dev=c("png","postscript","pdf"))
+setwd("~/data2/MIMIC-Callout/callout-final/")
+d.nonphi <- read.csv("callout.csv")
+nrow(d.nonphi)
+d.phi <- read.csv("callout-phi.csv")
+nrow(d.phi)
+setwd("~/db/callout/final")
+names(d.phi) <- tolower(names(d.phi))
+
+library(dplyr);library(Hmisc); library(car)
+library(ggplot2)
+```
+
+```{r}
+d.phi %>% full_join(d.nonphi,by="icustay_id") %>% nrow()
+d.phi %>% inner_join(d.nonphi,by="icustay_id") %>% nrow()
+d.phi %>% full_join(d.nonphi,by="icustay_id") %>% filter(micu==1 | msicu==1) %>% nrow()
+d.phi %>% inner_join(d.nonphi,by="icustay_id") %>% filter(micu==1 | msicu==1) %>% nrow()
+
+d <- d.phi %>% full_join(d.nonphi,by="icustay_id") %>% filter(micu==1 | msicu==1)
+d$HOSP_FREE_DAYS <- (28 - d$los_post_icu_days)*(d$los_post_icu_days<28)*(1-d$hospitaldeath)
+d$CALLOUT_DURING_ROUNDS <- d$hourofcallout>700 & d$hourofcallout<1200;
+d$CALLOUT_DURING_NIGHT <- d$hourofcallout>2300 | d$hourofcallout<700;
+d$DISCHARGEDELAY_HOURS <- d$dischargedelay_days*24;
+d$hourofcallout2 <- floor(d$hourofcallout/100) + ((d$hourofcallout/100) - floor(d$hourofcallout/100))*100/60
+d <- d %>% filter(callout_year<2012 & callout_year>2001)
+nrow(d)
+d$PROPFULL_BEDS <- rowSums(d[,grep("census",names(d))],na.rm=TRUE)/rowSums(d[,grep("beds",names(d))],na.rm=TRUE)
+#d <- d %>% mutate(ethnicity=stringr::str_sub(ethnicity,0,20))
+d <- d %>% mutate(ethnicity=recode_factor(ethnicity,`WHITE`="White",
+                                           `WHITE - EASTERN EUROPEAN`="White",
+                                           `WHITE - RUSSIAN` = "White",
+                                           `WHITE - BRAZILIAN` = "White",
+                                           `WHITE - OTHER EUROPEAN` = "White",
+                                           `BLACK/AFRICAN AMERICAN` = "African American/Black",
+                                           `BLACK/CAPE VERDEAN`= "African American/Black",
+                                           `BLACK/HAITIAN`= "African American/Black",
+                                           `BLACK/AFRICAN` = "African American/Black",
+                                           .default="Other"),MED_SERVICE=service=="MED")
+```
+
+
+Below are the Overall patient characteristics.
+
+```{r}
+library(MASS);library(splines);library(mgcv);library(plotly)
+d$discharge_time <- d$hourofcallout2 + d$DISCHARGEDELAY_HOURS
+d$discharge_time <- ifelse(d$discharge_time<24, d$discharge_time,d$discharge_time - floor(d$discharge_time/24)*24)
+d$daypostcall <- floor((d$hourofcallout2 + d$DISCHARGEDELAY_HOURS)/24)
+d$postcalldaycat2 <- cut2(d$daypostcall,c(1))
+
+library(tableone)
+vars1 <- c("micu","age_nohipaa", "callout_month","female","request_tele","request_resp","request_cdiff","request_mrsa", "request_vre","oasis","elixhauser_hospital","ethnicity","MED_SERVICE","HOSP_FREE_DAYS","callout_dayofweek","CALLOUT_DURING_NIGHT","CALLOUT_DURING_ROUNDS","DISCHARGEDELAY_HOURS","hourofcallout2","PROPFULL_BEDS","postcalldaycat2","hospitaldeath","los_preicu_days","los_post_callout_days","los_post_icu_days","los_pre_callout_days", "callout_year")
+factorVars1 = c("micu", "female","ethnicity","MED_SERVICE", "callout_month", "request_tele","request_resp","request_cdiff","request_mrsa", "request_vre","service","callout_dayofweek","CALLOUT_DURING_ROUNDS","CALLOUT_DURING_NIGHT","postcalldaycat2","hospitaldeath","callout_year")
+nonnormal.vars = c("los_preicu_days","los_post_callout_days","los_post_icu_days","los_pre_callout_days", "hourofcallout2","HOSP_FREE_DAYS")
+
+
+CreateTableOne(data=d,vars=vars1,factorVars = factorVars1) %>% print(
+  printToggle      = FALSE,
+  showAllLevels    = TRUE,
+  cramVars         = "kon",nonnormal = nonnormal.vars
+) %>%
+{data.frame(
+  variable_name             = gsub(" ", "&nbsp;", rownames(.), fixed = TRUE), ., 
+  row.names        = NULL, 
+  check.names      = FALSE, 
+  stringsAsFactors = FALSE)} %>% 
+knitr::kable(caption="Patient Characteristics Overall") 
+```
+
+
+# Question 1: Who has long discharge delays?
+
+
+```{r}
+CreateTableOne(data=d %>% mutate(DisDelay=cut2(DISCHARGEDELAY_HOURS,c(0,4,8,24))),vars=vars1,factorVars = factorVars1,strata="DisDelay",test=TRUE) %>% print(
+  printToggle      = FALSE,
+  showAllLevels    = TRUE,
+  cramVars         = "kon",nonnormal = nonnormal.vars
+) %>%
+{data.frame(
+  variable_name             = gsub(" ", "&nbsp;", rownames(.), fixed = TRUE), ., 
+  row.names        = NULL, 
+  check.names      = FALSE, 
+  stringsAsFactors = FALSE)} %>% 
+knitr::kable(caption="Patient Characteristics By Discharge Delay Categories (Hours)") 
+
+
+```
+
+
+
+
+```{r}
+CreateTableOne(data=d %>% mutate(DisDelay=cut2(DISCHARGEDELAY_HOURS,c(24))),vars=vars1,factorVars = factorVars1,strata="DisDelay",test=TRUE) %>% print(
+  printToggle      = FALSE,
+  showAllLevels    = TRUE,
+  cramVars         = "kon",nonnormal = nonnormal.vars
+) %>%
+{data.frame(
+  variable_name             = gsub(" ", "&nbsp;", rownames(.), fixed = TRUE), ., 
+  row.names        = NULL, 
+  check.names      = FALSE, 
+  stringsAsFactors = FALSE)} %>% 
+knitr::kable(caption="Patient Characteristics By Discharge Delay Categories (Hours)") 
+
+
+```
+
+We fit a logistic regression model with:
+
+1. Demographics: age, sex, 
+2. Requests: tele, resp, mrsa, cdiff, vre
+3. Adjustment for severity/comoribidity/icu los: oasis, exlixhauser, los_pre_callout_days
+4. Possible structural/admin variables: DOW, month, year.
+5. Census variables: type of bed requested, proportion of hospital beds is use.
+
+
+```{r}
+
+```
+
+```{r}
+vars1 <- c("micu","age_nohipaa", "callout_month","female","request_tele","request_resp","request_cdiff","request_mrsa", "request_vre","oasis","elixhauser_hospital","ethnicity","MED_SERVICE","HOSP_FREE_DAYS","callout_dayofweek","CALLOUT_DURING_NIGHT","CALLOUT_DURING_ROUNDS","DISCHARGEDELAY_HOURS","hourofcallout2","PROPFULL_BEDS","postcalldaycat2","los_preicu_days","los_post_callout_days","los_post_icu_days","los_pre_callout_days", "callout_year")
+factorVars1 = c("micu", "female","ethnicity","MED_SERVICE", "callout_month", "request_tele","request_resp","request_cdiff","request_mrsa", "request_vre","service","callout_dayofweek","CALLOUT_DURING_ROUNDS","CALLOUT_DURING_NIGHT","postcalldaycat2","callout_year")
+nonnormal.vars = c("los_preicu_days","los_post_callout_days","los_post_icu_days","los_pre_callout_days", "hourofcallout2","HOSP_FREE_DAYS")
+
+
+CreateTableOne(data=d,vars=vars1,factorVars = factorVars1,strata="hospitaldeath") %>% print(
+  printToggle      = FALSE,
+  showAllLevels    = TRUE,
+  cramVars         = "kon",nonnormal = nonnormal.vars
+) %>%
+{data.frame(
+  variable_name             = gsub(" ", "&nbsp;", rownames(.), fixed = TRUE), ., 
+  row.names        = NULL, 
+  check.names      = FALSE, 
+  stringsAsFactors = FALSE)} %>% 
+knitr::kable(caption="Patient Characteristics Overall") 
+
+```
+
+```{r}
+library(splines)
+full.model.glm <- glm(hospitaldeath ~ ns(DISCHARGEDELAY_HOURS,knots=c(6,12,24,36,48)) +  +cut2(oasis,g=3) + cut2(age_nohipaa,g=3) + female + request_tele + request_resp + request_mrsa + request_vre + request_cdiff + cut2(elixhauser_hospital,g=3) + cut2(los_pre_callout_days,c(1,3,7,28)) + as.factor(callout_month) + as.factor(callout_year) + as.factor(callout_dayofweek) + as.factor(callout_wardid==1)*cut2(PROPFULL_BEDS,c(0.9,1)) + MED_SERVICE + relevel(cut2(hourofcallout2,c(7,12,19)),"[ 7.000,12.000)"),data=d,family="binomial" )
+
+drop1(full.model.glm,test="Chisq")
+sjPlot::plot_model(full.model.glm,Title="Full Model, mortality")
+
+library(MASS)
+
+
+final.model.glm.aic <- stepAIC(full.model.glm,trace=0,scope=list(lower=~ns(DISCHARGEDELAY_HOURS,knots=c(6,12,24,36,48))))
+sjPlot::plot_model(final.model.glm.aic,Title="AIC Model, mortality")
+drop1(final.model.glm.aic,test="Chisq")
+final.model.glm.aicp <- final.model.glm.aic
+
+drop.res <- drop1(full.model.glm ,test="Chisq")[-2,]
+print(drop.res)
+rownames(drop.res)[which.max(drop.res$`Pr(>Chi)`)]
+drop.res$`Pr(>Chi)`[which.max(drop.res$`Pr(>Chi)`)]
+
+
+jdr.mort.glm <- update( full.model.glm, .~. -request_resp)
+drop.res <- drop1(jdr.mort.glm ,test="Chisq")[-2,]
+print(jdr.mort.glm)
+rownames(drop.res)[which.max(drop.res$`Pr(>Chi)`)]
+drop.res$`Pr(>Chi)`[which.max(drop.res$`Pr(>Chi)`)]
+
+
+jdr.mort.glm <- update( jdr.mort.glm, .~. -request_mrsa)
+drop.res <- drop1(jdr.mort.glm ,test="Chisq")[-2,]
+print(jdr.mort.glm)
+rownames(drop.res)[which.max(drop.res$`Pr(>Chi)`)]
+drop.res$`Pr(>Chi)`[which.max(drop.res$`Pr(>Chi)`)]
+
+jdr.mort.glm <- update( jdr.mort.glm, .~. -cut2(age_nohipaa, g = 3))
+drop.res <- drop1(jdr.mort.glm ,test="Chisq")[-2,]
+print(jdr.mort.glm)
+rownames(drop.res)[which.max(drop.res$`Pr(>Chi)`)]
+drop.res$`Pr(>Chi)`[which.max(drop.res$`Pr(>Chi)`)]
+
+jdr.mort.glm <- update( jdr.mort.glm, .~. -as.factor(callout_wardid == 1):cut2(PROPFULL_BEDS, c(0.9, 1)))
+drop.res <- drop1(jdr.mort.glm ,test="Chisq")[-2,]
+print(jdr.mort.glm)
+rownames(drop.res)[which.max(drop.res$`Pr(>Chi)`)]
+drop.res$`Pr(>Chi)`[which.max(drop.res$`Pr(>Chi)`)]
+
+jdr.mort.glm <- update( jdr.mort.glm, .~. -cut2(PROPFULL_BEDS, c(0.9, 1)))
+drop.res <- drop1(jdr.mort.glm ,test="Chisq")[-2,]
+print(jdr.mort.glm)
+rownames(drop.res)[which.max(drop.res$`Pr(>Chi)`)]
+drop.res$`Pr(>Chi)`[which.max(drop.res$`Pr(>Chi)`)]
+
+jdr.mort.glm <- update( jdr.mort.glm, .~. -as.factor(callout_dayofweek))
+drop.res <- drop1(jdr.mort.glm ,test="Chisq")[-2,]
+print(jdr.mort.glm)
+rownames(drop.res)[which.max(drop.res$`Pr(>Chi)`)]
+drop.res$`Pr(>Chi)`[which.max(drop.res$`Pr(>Chi)`)]
+
+jdr.mort.glm <- update( jdr.mort.glm, .~. -as.factor(callout_month))
+drop.res <- drop1(jdr.mort.glm ,test="Chisq")[-2,]
+print(jdr.mort.glm)
+rownames(drop.res)[which.max(drop.res$`Pr(>Chi)`)]
+drop.res$`Pr(>Chi)`[which.max(drop.res$`Pr(>Chi)`)]
+
+jdr.mort.glm <- update( jdr.mort.glm, .~. -relevel(cut2(hourofcallout2, c(7, 12, 19)), "[ 7.000,12.000)"))
+drop.res <- drop1(jdr.mort.glm ,test="Chisq")[-2,]
+print(jdr.mort.glm)
+rownames(drop.res)[which.max(drop.res$`Pr(>Chi)`)]
+drop.res$`Pr(>Chi)`[which.max(drop.res$`Pr(>Chi)`)]
+
+jdr.mort.glm <- update( jdr.mort.glm, .~. -MED_SERVICE)
+drop.res <- drop1(jdr.mort.glm ,test="Chisq")[-2,]
+print(jdr.mort.glm)
+rownames(drop.res)[which.max(drop.res$`Pr(>Chi)`)]
+drop.res$`Pr(>Chi)`[which.max(drop.res$`Pr(>Chi)`)]
+
+jdr.mort.glm <- update( jdr.mort.glm, .~. -female)
+drop.res <- drop1(jdr.mort.glm ,test="Chisq")[-2,]
+print(jdr.mort.glm)
+rownames(drop.res)[which.max(drop.res$`Pr(>Chi)`)]
+drop.res$`Pr(>Chi)`[which.max(drop.res$`Pr(>Chi)`)]
+jdr.mort.glm.splines <- jdr.mort.glm
+drop1(jdr.mort.glm.splines,test="Chisq")
+
+```
+
+
+```{r}
+library(splines)
+full.model.glm <- glm(hospitaldeath ~ cut2(DISCHARGEDELAY_HOURS,c(6,12,24,36,48))   +cut2(oasis,g=3) + cut2(age_nohipaa,g=3) + female + request_tele + request_resp + request_mrsa + request_vre + request_cdiff + cut2(elixhauser_hospital,g=3) + cut2(los_pre_callout_days,c(1,3,7,28)) + as.factor(callout_month) + as.factor(callout_year) + as.factor(callout_dayofweek) + as.factor(callout_wardid==1)*cut2(PROPFULL_BEDS,c(0.9,1)) + MED_SERVICE + relevel(cut2(hourofcallout2,c(7,12,19)),"[ 7.000,12.000)"),data=d,family="binomial" )
+
+drop1(full.model.glm,test="Chisq")
+sjPlot::plot_model(full.model.glm,Title="Full Model, mortality")
+sjPlot::sjt.glm(full.model.glm)
+
+library(MASS)
+
+
+final.model.glm.aic <- stepAIC(full.model.glm,trace=0,scope=list(lower=~cut2(DISCHARGEDELAY_HOURS,c(6,12,24,36,48))))
+sjPlot::plot_model(final.model.glm.aic,Title="AIC Model, mortality")
+sjPlot::sjt.glm(final.model.glm.aic)
+drop1(final.model.glm.aic,test="Chisq")
+
+drop.res <- drop1(full.model.glm ,test="Chisq")[-2,]
+print(drop.res)
+rownames(drop.res)[which.max(drop.res$`Pr(>Chi)`)]
+drop.res$`Pr(>Chi)`[which.max(drop.res$`Pr(>Chi)`)]
+
+jdr.mort.glm <- update( full.model.glm, .~. -request_resp)
+drop.res <- drop1(jdr.mort.glm ,test="Chisq")[-2,]
+print(jdr.mort.glm)
+rownames(drop.res)[which.max(drop.res$`Pr(>Chi)`)]
+drop.res$`Pr(>Chi)`[which.max(drop.res$`Pr(>Chi)`)]
+
+
+jdr.mort.glm <- update( jdr.mort.glm, .~. -request_mrsa)
+drop.res <- drop1(jdr.mort.glm ,test="Chisq")[-2,]
+print(jdr.mort.glm)
+rownames(drop.res)[which.max(drop.res$`Pr(>Chi)`)]
+drop.res$`Pr(>Chi)`[which.max(drop.res$`Pr(>Chi)`)]
+
+jdr.mort.glm <- update( jdr.mort.glm, .~. -cut2(age_nohipaa, g = 3))
+drop.res <- drop1(jdr.mort.glm ,test="Chisq")[-2,]
+print(jdr.mort.glm)
+rownames(drop.res)[which.max(drop.res$`Pr(>Chi)`)]
+drop.res$`Pr(>Chi)`[which.max(drop.res$`Pr(>Chi)`)]
+
+jdr.mort.glm <- update( jdr.mort.glm, .~. -as.factor(callout_wardid == 1):cut2(PROPFULL_BEDS, c(0.9, 1)))
+drop.res <- drop1(jdr.mort.glm ,test="Chisq")[-2,]
+print(jdr.mort.glm)
+rownames(drop.res)[which.max(drop.res$`Pr(>Chi)`)]
+drop.res$`Pr(>Chi)`[which.max(drop.res$`Pr(>Chi)`)]
+
+jdr.mort.glm <- update( jdr.mort.glm, .~. -cut2(PROPFULL_BEDS, c(0.9, 1)))
+drop.res <- drop1(jdr.mort.glm ,test="Chisq")[-2,]
+print(jdr.mort.glm)
+rownames(drop.res)[which.max(drop.res$`Pr(>Chi)`)]
+drop.res$`Pr(>Chi)`[which.max(drop.res$`Pr(>Chi)`)]
+
+jdr.mort.glm <- update( jdr.mort.glm, .~. -as.factor(callout_dayofweek))
+drop.res <- drop1(jdr.mort.glm ,test="Chisq")[-2,]
+print(jdr.mort.glm)
+rownames(drop.res)[which.max(drop.res$`Pr(>Chi)`)]
+drop.res$`Pr(>Chi)`[which.max(drop.res$`Pr(>Chi)`)]
+
+jdr.mort.glm <- update( jdr.mort.glm, .~. -as.factor(callout_month))
+drop.res <- drop1(jdr.mort.glm ,test="Chisq")[-2,]
+print(jdr.mort.glm)
+rownames(drop.res)[which.max(drop.res$`Pr(>Chi)`)]
+drop.res$`Pr(>Chi)`[which.max(drop.res$`Pr(>Chi)`)]
+
+jdr.mort.glm <- update( jdr.mort.glm, .~. -MED_SERVICE)
+drop.res <- drop1(jdr.mort.glm ,test="Chisq")[-2,]
+print(jdr.mort.glm)
+rownames(drop.res)[which.max(drop.res$`Pr(>Chi)`)]
+drop.res$`Pr(>Chi)`[which.max(drop.res$`Pr(>Chi)`)]
+
+jdr.mort.glm <- update( jdr.mort.glm, .~. -relevel(cut2(hourofcallout2, c(7, 12, 19)), "[ 7.000,12.000)"))
+drop.res <- drop1(jdr.mort.glm ,test="Chisq")[-2,]
+print(jdr.mort.glm)
+rownames(drop.res)[which.max(drop.res$`Pr(>Chi)`)]
+drop.res$`Pr(>Chi)`[which.max(drop.res$`Pr(>Chi)`)]
+
+jdr.mort.glm <- update( jdr.mort.glm, .~. -female)
+drop.res <- drop1(jdr.mort.glm ,test="Chisq")[-2,]
+print(jdr.mort.glm)
+rownames(drop.res)[which.max(drop.res$`Pr(>Chi)`)]
+drop.res$`Pr(>Chi)`[which.max(drop.res$`Pr(>Chi)`)]
+jdr.mort.glm.bins <- jdr.mort.glm
+drop1(jdr.mort.glm.bins,test="Chisq")
+```
+
+
+
+```{r,fig.cap="a"}
+outv <- (predict(ns(d$DISCHARGEDELAY_HOURS,knots=c(6,12,24,36,48)),newx=seq(0,72,0.5)))%*%coef(jdr.mort.glm.splines)[2:7]
+
+covoutv <- predict(ns(d$DISCHARGEDELAY_HOURS,knots=c(6,12,24,36,48)),newx=seq(0,72,0.5))%*% summary(jdr.mort.glm.splines)$cov.unscaled[2:7,2:7]%*%t(predict(ns(d$DISCHARGEDELAY_HOURS,knots=c(6,12,24,36,48)),newx=seq(0,72,0.5)))
+
+Z <- matrix(0,nr=nrow(covoutv),ncol=nrow(outv))
+diag(Z) <- 1
+Z[,1] <- Z[,1] - 1
+se <- diag(Z%*%covoutv%*%t(Z))
+LB <- outv - qnorm(0.975)*se -  outv[1,]
+UB <- outv + qnorm(0.975)*se -  outv[1,]
+outv <- exp(outv - outv[1,])
+plot(seq(0,72,0.5),outv,xlim=c(0,60),type="l",ylim=c(0.4,1.75),xlab="Discharge Delay (Hours)",ylab="Odds Ratio for In-Hospital Mortality",cex.axis=1.3,cex.lab=1.3)
+title(main="a) Spline Analysis",adj=0)
+lines(seq(0,72,0.5),exp(LB),lty=3)
+lines(seq(0,72,0.5),exp(UB),lty=3)
+lines(c(0,100),c(1,1),lty=2,lwd=0.3)
+rug(d$DISCHARGEDELAY_HOURS)
+p_a <- recordPlot()
+#as ggplot
+out <- data.frame(vals=seq(0,72,0.5),outv=outv,UB=UB,LB=LB)
+p_a <- ggplot(out,aes(vals,outv)) + geom_line() + geom_line(aes(vals,exp(LB)),lty=3) + geom_line(aes(vals,exp(UB)),lty=3) + geom_hline(yintercept = 1,lty=2) + xlab("Discharge Delay (Hours)") + ylab("Odds Ratio for In-Hospital Mortality") + ggtitle("a) Spline Analysis") +  theme_bw() + geom_rug(data=d,aes(x=DISCHARGEDELAY_HOURS,y=NULL)) + xlim(c(0,60))  + theme(axis.text = element_text(size=16),axis.title = element_text(size=16))  + ylim(c(0.55,1.65)) 
+p_a
+```
+
+Below is a similar approach to the splines, but using gam (penalized splines chosen) just for a last look at this.  Indeed, the wiggleness goes away.
+
+```{r}
+
+library(mgcv)
+
+full.model.gam <- gam(hospitaldeath ~ s(DISCHARGEDELAY_HOURS,k=10,bs="ts") +  +cut2(oasis,g=3) + cut2(age_nohipaa,g=3) + female + request_tele + request_resp + request_mrsa + request_vre + request_cdiff + cut2(elixhauser_hospital,g=3) + cut2(los_pre_callout_days,c(1,3,7,28)) + as.factor(callout_month) + as.factor(callout_year) + as.factor(callout_dayofweek) + as.factor(callout_wardid==1)*cut2(PROPFULL_BEDS,c(0.9,1)) + MED_SERVICE + relevel(cut2(hourofcallout2,c(7,12,19)),"[ 7.000,12.000)"),data=d,family="binomial" )
+
+plot(full.model.gam)
+summary(full.model.gam)
+anova(full.model.gam)
+```
+
+```{r,fig.cap="b"}
+OR.out <- confint(jdr.mort.glm.bins)
+#out.reg <- data.frame(group=c("<6","6-12","12-24","24-36","36-48",">48"),OR=c(1,1.02,1.18,0.95,1.76,1.22),ORLB=c(1,0.86,0.84,0.65,0.71,0.66),ORUB=c(1,1.32,1.64,1.36,3.86,2.13),stringsAsFactors = FALSE)
+out.reg <- data.frame(group=c("<6","6-12","12-24","24-36","36-48",">48"),OR=exp(c(0,coef(jdr.mort.glm.bins)[2:6])),ORLB=exp(c(0,OR.out[2:6,1])),ORUB=exp(c(0,OR.out[2:6,2])))
+out.reg$group <- factor(out.reg$group,levels=out.reg$group)
+p_b <- ggplot(out.reg,aes(group,OR)) + geom_point() + geom_errorbar(aes(ymax=ORUB,ymin=ORLB),width=0.3) + xlab("Discharge Delay (Hours)") + ylab("Odds Ratio for In-Hospital Death") + ggtitle("b) Binned Analysis") + theme_bw() + geom_hline(yintercept = 1,lty=2) + theme(axis.text = element_text(size=16),axis.title = element_text(size=16)) 
+
+```
+
+```{r}
+library(gridExtra); library(grid)
+setEPS()
+postscript("combined.eps",width=16,height=8)
+ml <- marrangeGrob(list(p_a,p_b),nrow=1,ncol=2,top="")
+ml
+dev.off()
+postscript("combined_vert.eps",width=8,height=16)
+ml <- marrangeGrob(list(p_a,p_b),nrow=2,ncol=1,top="")
+ml
+dev.off()
+```
